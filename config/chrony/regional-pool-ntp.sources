@@ -1,0 +1,4 @@
+pool 0.europe.pool.ntp.org iburst
+pool 1.europe.pool.ntp.org iburst
+pool 2.europe.pool.ntp.org iburst
+pool 3.europe.pool.ntp.org iburst

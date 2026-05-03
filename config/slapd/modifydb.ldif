@@ -1,0 +1,44 @@
+# Warning: do not add empty lines
+dn: olcDatabase={1}mdb,cn=config
+changetype: modify
+# dedicated DB directory
+replace: olcDbDirectory
+olcDbDirectory: /var/lib/ldap/phonebook
+-
+# 32MB max size
+replace: olcDbMaxSize
+olcDbMaxSize: 33554432
+-
+# indices
+replace: olcDbIndex
+olcDbIndex: objectClass eq
+olcDbIndex: entryCSN eq
+olcDbIndex: entryUUID eq
+olcDbIndex: cn eq,sub
+olcDbIndex: sn eq,sub
+olcDbIndex: displayName eq,sub
+olcDbIndex: telephoneNumber eq,sub
+olcDbIndex: homePhone eq,sub
+olcDbIndex: mobile eq,sub
+-
+# suffix and admin
+replace: olcSuffix
+olcSuffix: o=phonebook,dc=router,dc=lan
+-
+replace: olcRootDN
+olcRootDN: cn=admin,o=phonebook,dc=router,dc=lan
+-
+# use hashed password
+replace: olcRootPW
+olcRootPW: {SSHA}REPLACE_WITH_HASH_GENERATED_BY_SLAPPASSWD
+-
+# access controls
+replace: olcAccess
+olcAccess: {0}to attrs=userPassword
+    by self write
+    by anonymous auth
+    by * none
+olcAccess: {1}to dn.subtree="o=phonebook,dc=router,dc=lan"
+    by dn.base="cn=admin,o=phonebook,dc=router,dc=lan" write
+    by dn.subtree="o=phonebook,dc=router,dc=lan" read
+    by anonymous none

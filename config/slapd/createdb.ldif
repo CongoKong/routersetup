@@ -1,0 +1,36 @@
+# Warning: do not add empty lines
+dn: olcDatabase=mdb,cn=config
+objectClass: olcDatabaseConfig
+objectClass: olcMdbConfig
+olcDatabase: mdb
+# dedicated DB directory (must exist before applying)
+olcDbDirectory: /var/lib/ldap/phonebook
+# 64MB max size for ca. 1000 phonebook entries
+olcDbMaxSize: 33554432
+# minimal required indexes
+olcDbIndex: objectClass eq
+olcDbIndex: entryCSN eq
+olcDbIndex: entryUUID eq
+# name indices (for searching)
+olcDbIndex: cn eq,sub
+olcDbIndex: sn eq,sub
+olcDbIndex: displayName eq,sub
+# phone indices (for caller ID / reverse lookup)
+olcDbIndex: telephoneNumber eq,sub
+olcDbIndex: homePhone eq,sub
+olcDbIndex: mobile eq,sub
+# suffix and admin
+olcSuffix: o=phonebook,dc=router,dc=lan
+olcRootDN: cn=admin,o=phonebook,dc=router,dc=lan
+# use hashed password
+olcRootPW: {SSHA}REPLACE_WITH_HASH_GENERATED_BY_SLAPPASSWD
+# secure password ACL
+olcAccess: {0}to attrs=userPassword
+    by self write
+    by anonymous auth
+    by * none
+# general ACL
+olcAccess: {1}to dn.subtree="o=phonebook,dc=router,dc=lan"
+    by dn.base="cn=admin,o=phonebook,dc=router,dc=lan" write
+    by dn.subtree="o=phonebook,dc=router,dc=lan" read
+    by anonymous none

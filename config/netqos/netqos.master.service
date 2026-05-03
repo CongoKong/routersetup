@@ -1,0 +1,31 @@
+[Unit]
+Description=Network Quality of Service (CAKE)
+
+# --- Firewall must be initialized before we attach qdiscs ---
+# nftables may create/modify interfaces or apply rules that affect packet paths.
+After=nftables.service
+
+# --- Ensure the NIC exists as a kernel device before running the script ---
+# This is the most deterministic way to wait for the actual hardware.
+# It prevents races with udev renaming or delayed PCIe initialization.
+Requires=sys-subsystem-net-devices-IFWAN.device
+After=sys-subsystem-net-devices-IFWAN.device
+
+# Wait for udev to finish renaming + attribute application
+After=systemd-udevd.service
+After=systemd-udev-trigger.service
+
+[Service]
+Type=oneshot
+
+# --- Apply CAKE using idempotent script ---
+# The script handles operstate, carrier, overhead, and qdisc replacement.
+ExecStart=/usr/local/sbin/netqos.sh
+
+# --- Keep the service "active" after running ---
+# Prevents systemd from thinking the service failed or needs restarting.
+RemainAfterExit=yes
+
+[Install]
+# --- Start at boot, after multi-user.target is reached ---
+WantedBy=multi-user.target

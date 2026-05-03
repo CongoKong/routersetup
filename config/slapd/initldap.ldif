@@ -1,0 +1,32 @@
+# root entry
+dn: o=phonebook,dc=router,dc=lan
+objectClass: organization
+o: phonebook
+
+# service account for i.e. the phone hardware
+dn: uid=ldapphone,o=phonebook,dc=router,dc=lan
+objectClass: device
+objectClass: uidObject
+objectClass: simpleSecurityObject
+uid: ldapphone
+cn: ldapphone
+description: Login for LDAP Phone
+userPassword: {SSHA}REPLACE_WITH_HASH_GENERATED_BY_SLAPPASSWD
+
+# organizational unit for contacts
+dn: ou=privatecontacts,o=phonebook,dc=router,dc=lan
+objectClass: organizationalUnit
+ou: privatecontacts
+
+# "John Doe" sample entry
+dn: cn=John Doe,ou=privatecontacts,o=phonebook,dc=router,dc=lan
+objectClass: inetOrgPerson
+cn: John Doe
+sn: Doe
+displayName: John Doe
+description: Birthday: 1970-06-15
+homePostalAddress: 1234 Placeholder Lane$Apartment 4B$Anytown$USA
+homePhone: +1-555-010-777
+mobile: +1-555-010-888
+telephoneNumber: +1-555-010-999
+mail: john.doe@router.lan
