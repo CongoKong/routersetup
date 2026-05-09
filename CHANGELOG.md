@@ -7,7 +7,7 @@ The format is based on semantic versioning (MAJOR.MINOR.PATCH).
 
 ## [v2.1.0] – Initial Release
 ### Added
-- Optimized `sysctl.d` kernel/network parameters for deterministic routing performance
+- Optimized sysctl.d kernel/network parameters for deterministic routing performance
 - nftables firewall (IPv4/IPv6) with modular chain layout
 - dhcpcd for WAN DHCP and IPv6 autoconfiguration
 - dnscrypt-proxy as encrypted upstream DNS resolver
@@ -20,8 +20,9 @@ The format is based on semantic versioning (MAJOR.MINOR.PATCH).
 - Example configuration templates and documentation
 
 ### Removed / Disabled
-- NetworkManager fully disabled/removed
-- systemd-resolved fully disabled/removed to avoid resolver conflicts
+- NetworkManager disabled/removed, replaced by dhcpcd and dnsmasq
+- systemd-resolved disabled, replaced by dnsmasq and dnscrypt-proxy
+- UFW (uncomplicated firewall) disabled, replaced by nftables
 
 ### Notes
 - This is the first published version of the project.
