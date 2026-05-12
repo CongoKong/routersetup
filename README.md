@@ -55,12 +55,15 @@
             * [Maintaining the Phonebook](#maintaining-the-phonebook)
         * [Configuration: config/nftables/nftables.master.conf](#configuration-confignftablesnftablesmasterconf)
             * [Enabling Reverse-Proxy Support](#enabling-reverse-proxy-support)
-                * [What these Variables do](#what-these-variables-do)
-                * [Security Considerations](#security-considerations)
+                * [What these Variables do (Reverse-Proxy)](#what-these-variables-do-reverse-proxy)
+                * [Security Considerations (Reverse-Proxy)](#security-considerations-reverse-proxy)
             * [Example: configure a FritzBox to forward Packets to Caddy / copyparty](#example-configure-a-fritzbox-to-forward-packets-to-caddy--copyparty)
+            * [Enabling SAT>IP Client Support](#enabling-satip-client-support)
+                * [What these Variables do (SAT>IP Client Support)](#what-these-variables-do-satip-client-support)
+                * [Security Considerations (SAT>IP Client Support)](#security-considerations-satip-client-support)
 
 # Overview
-**routersetup** is a bash script which transforms a Debian-based Linux system into a fully functional IPv4/IPv6 dual‑stack router. A minimal hardware configuration – typically two network interfaces designated as WAN and LAN – is sufficient to deploy a working router.
+**routersetup** is a bash script which transforms a Debian- or Ubuntu- based Linux system into a fully functional IPv4/IPv6 dual‑stack router. A minimal hardware configuration – typically two network interfaces designated as WAN and LAN – is sufficient to deploy a working router.
 
 A typical deployment scenario is illustrated below:
 ```mermaid
@@ -104,7 +107,7 @@ graph TD
 ```
 
 ## Core Functionality
-**routersetup** configures the underlying Linux system to forward packets between WAN and LAN interfaces and installs a curated set of network services required for a modern router. All components are sourced from the Debian repositories or authoritative upstream maintainers – no proprietary or vendor‑locked technologies are used.
+**routersetup** configures the underlying Linux system to forward packets between WAN and LAN interfaces and installs a curated set of network services required for a modern router. All components are sourced from the Debian / Ubuntu repositories or authoritative upstream maintainers – no proprietary or vendor‑locked technologies are used.
 
 ## Installed and Configured Services
 Mandatory components:
@@ -121,7 +124,7 @@ Optional components:
 
 ## Advantages over Consumer and ISP Routers
 Deploying **routersetup** on general‑purpose hardware provides several operational benefits:
-* long‑term software lifecycle – Debian‑based systems receive security updates for up to a decade.
+* long‑term software lifecycle – Debian-/ Ubuntu‑ based systems receive security updates for up to a decade.
 * higher security posture – Faster patch availability and no vendor‑imposed firmware delays.
 * greater feature set – Any additional Linux service can be installed as needed.
 * hardware flexibility – Operators may choose NICs, storage, and RAM according to performance requirements.
@@ -130,7 +133,7 @@ Deploying **routersetup** on general‑purpose hardware provides several operati
 While BSD‑based appliances are popular in the firewall space, **routersetup** offers distinct advantages:
 * broader hardware compatibility – Linux supports a wider range of modern NICs and offloading features.
 * modern network stack – The Linux kernel provides advanced routing, queuing, and offload capabilities.
-* full Linux environment – The system is not limited to firewall‑only functionality; any service available in Debian can be deployed without constraint.
+* full Linux environment – The system is not limited to firewall‑only functionality; any service available in Debian / Ubuntu can be deployed without constraint.
 
 # Installation
 **routersetup** is distributed as a standalone directory containing the main script, configuration templates, and supporting libraries. To begin, download the latest release archive and extract it into a working directory.
@@ -158,7 +161,7 @@ routersetup/
   Includes helper functions and support scripts.
 
 ## Important Warning
-**routersetup performs deep, system‑level modifications** to transform a general‑purpose Debian installation into a routing appliance. These changes affect:
+**routersetup performs deep, system‑level modifications** to transform a general‑purpose Debian / Ubuntu installation into a routing appliance. These changes affect:
 * network interface configuration
 * firewall rules
 * DNS/DHCP services
@@ -284,7 +287,9 @@ fd64:2e91:427b:0000::1  router6
 
 #### Required Adjustments
 * Replace both IP addresses with the values you configured in `iflan-ipv6-address` and `iflan-ipv4-address`.
-* You may change the hostnames (`router6` and `router`) to any preferred naming scheme.
+* In principle, you may change the hostnames (`router6` and `router`) to any preferred naming scheme.
+  However, the hostname set in */etc/hostname* should be present in *hosts* so the system can resolve its own name.
+  Assign it to the machine's LAN interface – i.e., replace `router` with the hostname of the system.
 * Using different names for IPv4 and IPv6 is recommended to simplify connectivity testing.
 
 #### Additional Recommendations
@@ -827,9 +832,10 @@ section to produce the final */etc/nftables.conf*.
 
 The default nftables configuration is prepared for systems that act as:
 * a LAN router with strict WAN isolation
-* and optional a reverse-proxy for a file server (e.g., using Caddy as reverse proxy and copyparty as file server)
+* optional: a reverse-proxy for a file server (e.g., using Caddy as reverse proxy and copyparty as file server)
+* optional: a client for WAN-based SAT>IP servers using UDP/RTSP to transmit broadcast signals (DVB)
 
-**Reverse-proxy support is disabled by default but can be enabled by adjusting two variables.**
+**Reverse-Proxy and SAT>IP Client Support is disabled by default but can be enabled by adjusting variables.**
 
 #### Enabling Reverse-Proxy Support
 In the default configuration, the relevant lines are:
@@ -844,7 +850,7 @@ define caddy_verdict = caddy_rules  # set to handle_reject to disable Caddy port
 define caddy_port = <matching Caddy port>
 ```
 
-##### What these Variables do
+##### What these Variables do (Reverse-Proxy)
 `caddy_verdict` – This variable controls which nftables chain handles inbound HTTP(S) traffic:
 * `handle_reject`
     * default behavior
@@ -861,13 +867,13 @@ This design ensures that enabling or disabling public‑facing services is a sin
 
 Typical values:
 
-* `443` – standard HTTPS
+* `443` – standard HTTPS (ports 0-1023 are privileged ports, requiring root privileges to use)
 * `8443` – alternative HTTPS port
 * `custom port` – if Caddy is bound behind another service or container
 
 The nftables rules will accept WAN HTTP(S) traffic for this port.
 
-##### Security Considerations
+##### Security Considerations (Reverse-Proxy)
 * When `caddy_verdict = handle_reject`, the router is not reachable from the internet on `caddy_port`.
 * When `caddy_verdict = caddy_rules`, the router becomes a public HTTP(S) endpoint.
 * Ensure Caddy is properly configured with:
@@ -902,6 +908,43 @@ The nftables rules will accept WAN HTTP(S) traffic for this port.
 
 This creates four rules in total:  
 Two for copyparty\_wan\_tcp (IPv4 \+ IPv6) and two for copyparty\_wan\_udp (IPv4 \+ IPv6).
+
+#### Enabling SAT>IP Client Support
+Enable this configuration **only** for WAN-based SAT>IP servers. LAN-based servers are supported by default.
+
+See the following lines in the default configuration:
+```
+define satip_verdict = handle_reject        # set to satip_rules to enable DVB streaming
+define satip_servers = { 192.168.178.1 }    # IPv4 of SAT>IP server
+define satip_ports = 5556-5599              # ports used for DVB streaming
+```
+
+To enable SAT>IP Client Support, change them to:
+```
+define satip_verdict = satip_rules          # set to handle_reject to disable DVB streaming
+define satip_servers = { [IPv4 address of SAT>IP server], [IPv4 address of SAT>IP server], ... }
+define satip_ports = <UDP/RTSP port range used for DVB streaming>
+```
+
+##### What these Variables do (SAT>IP Client Support)
+`satip_verdict` – This variable controls which nftables chain handles inbound UDP/RTSP traffic:
+* `handle_reject`
+    * default behavior
+    * unsolicited UDP/RTSP traffic from SAT>IP server(s) is rejected
+* `satip_rules`
+    * opens `satip_ports` for incoming (autonomous) UDP/RTSP streams from SAT>IP server(s)
+    * allows SAT>IP clients (such as Tvheadend) to receive media streams on these ports
+* `satip_servers` – comma-separated IPv4 whitelist of allowed SAT>IP source host(s).
+Only traffic from these host(s) is allowed to be received on `satip_ports`.
+* `satip_ports` – inbound UDP port range for streaming media. Must start on an even port and end on an odd port
+(requires even/odd RTP/RTCP port pairs).
+
+##### Security Considerations  (SAT>IP Client Support)
+* When `satip_verdict = handle_reject`, the router blocks unsolicited traffic from the internet on `satip_ports`.
+* When `satip_verdict = satip_rules`, the router can receive SAT>IP streams from `satip_servers` on `satip_ports` only.
+* Tvheadend alignment: match `satip_ports` to **Configuration → General → Ports settings → RTSP UDP minimum / maximum port**.
+
+**routersetup provisions nftables ingress rules only**; it does not deploy or configure SAT>IP client software.
 
 [^1]:  FritzBox users: in **Home network → Network → Network Settings → Change Advanced Network Settings → IPv6**, activate **Enable DHCPv6 server in the FRITZ\!Box for the home network** with the option: **Assign DNS server, prefix (IA\_PD) and IPv6 address (IA\_NA)** to receive a GUA prefix. Accept double NAT instead of FritzBox modem mode to take advantage of the 2.5 GBit Ethernet port (if available).
 

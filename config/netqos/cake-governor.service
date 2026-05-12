@@ -1,0 +1,45 @@
+[Unit]
+Description=MQ CAKE Backlog Governor
+
+# netqos.service must have run and configured the MQ root before we start.
+# Wants= (not Requires=) so the governor survives a link flap: netqos stops
+# when the device goes down (BindsTo), but the governor keeps running and
+# re-syncs via its own recovery logic when the link returns (or,
+# for long flaps, exits via MAX_FAILURES and is restarted by systemd).
+Wants=netqos.service
+After=netqos.service
+
+[Service]
+Type=simple
+
+# the script dynamically adjusts MQ CAKE bandwidth based on queue backlog
+ExecStart=/usr/local/sbin/cake-governor.sh
+
+# restart only on failure (non-zero exit)
+# clean stops via SIGTERM stay stopped
+# wait 10s before retrying so a flapping link or
+# a transient tc failure has time to settle
+Restart=on-failure
+RestartSec=10
+
+# stop with SIGTERM so the cleanup trap fires and resets all queues
+# (SIGTERM is the default; stated explicitly to document the dependency)
+KillSignal=SIGTERM
+
+# --- security hardening ---
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+PrivateDevices=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+
+[Install]
+# start at boot, after multi-user.target is reached
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/usr/bin/env sh
 ### Copyright (c) 2025-2026 Christian Wagner <voodoochriz at gmail dot com>
 ### Licensed under the ISC license. See LICENSE.txt for details.
 #
@@ -8,26 +8,33 @@
 #   mode     : ipv4 | ipv6 | dual (default: dual)
 #   interface: e.g. eth0
 
-# -e: Exit immediately if a command exits with a non-zero status
-# -u: Treat unset variables as an error when substituting
+# -e: exit immediately if a command exits with a non-zero status
+# -u: treat unset variables as an error when substituting
 set -eu
 
 TIMEOUT=${1:-60}
 MODE=${2:-"dual"} # Options: ipv4, ipv6, dual
 IFACE=${3:-"IFWAN"}
 
-# Handle manual termination (Ctrl+C) gracefully
-trap 'printf "\n"; exit 130' INT TERM
+# handle manual termination (Ctrl+C) gracefully
+trap 'printf "\n"; exit 130' INT
+trap 'printf "\n"; exit 143' TERM
 
-# --- Validation: Timeout ---
+# awk existence
+if ! command -v awk >/dev/null 2>&1; then
+    printf "ERROR: awk command not found!\n" >&2
+    exit 1
+fi
+
+# --- validate timeout ---
 case "$TIMEOUT" in
     ''|*[!0-9]*|0[0-9]|[0-9][0-9][0-9]*)
-        echo "ERROR: Timeout must be a canonical integer 0–99 without leading zeros." >&2
-        exit 11
+        printf "ERROR: timeout must be a canonical integer 0–99 without leading zeros!\n" >&2
+        exit 1
         ;;
 esac
 
-# --- Validation: Mode ---
+# --- validate mode ---
 MODE_CANON=$(printf '%s' "$MODE" | tr 'A-Z' 'a-z')
 
 case "$MODE_CANON" in
@@ -35,82 +42,80 @@ case "$MODE_CANON" in
         MODE="$MODE_CANON"   # canonicalize only after validation
         ;;
     *)
-        echo "ERROR: Mode must be one of: ipv4, ipv6, dual." >&2
-        exit 12
+        printf "ERROR: mode must be one of: ipv4, ipv6, dual!\n" >&2
+        exit 1
         ;;
 esac
 
-# --- Validation: Interface Existence ---
+# --- validate interface existence ---
 if ! ip link show "$IFACE" >/dev/null 2>&1; then
-    echo "ERROR: Interface $IFACE does not exist." >&2
-    exit 13
+    printf "ERROR: interface %s does not exist!\n" "$IFACE" >&2
+    exit 1
 fi
 
-echo "Waiting for $MODE connectivity on $IFACE (max. ${TIMEOUT}s)..."
+printf "waiting for %s connectivity on %s (max. %ss)...\n" "$MODE" "$IFACE" "$TIMEOUT"
 
-# TIMEOUT=0 means: perform exactly one readiness check
-[ "$TIMEOUT" -eq 0 ] && TIMEOUT=1
+# timeout=0 means: perform exactly one readiness check
+if [ "$TIMEOUT" -eq 0 ]; then TIMEOUT=1; fi
 
 OPFILE="/sys/class/net/$IFACE/operstate"
 CFILE="/sys/class/net/$IFACE/carrier"
 
 ELAPSED=0
 while [ "$ELAPSED" -lt "$TIMEOUT" ]; do
+    if [ "$ELAPSED" -gt 0 ]; then sleep 1; fi
     ELAPSED=$((ELAPSED + 1))
 
-    [ "$ELAPSED" -gt 1 ] && sleep 1
-
-    # --- Check operstate if available ---
+    # --- check operstate if available ---
     if [ -e "$OPFILE" ]; then
-        OPSTATE=$(cat "$OPFILE" 2>/dev/null || echo "unknown")
+        OPSTATE=$(cat "$OPFILE" 2>/dev/null || printf "unknown")
         case "$OPSTATE" in
             down|unknown|dormant|lowerlayerdown)
-                # Driver not ready yet
-                printf "[%ss] Waiting on %s (state: %s)...\n" "$ELAPSED" "$IFACE" "$OPSTATE"
+                # driver not ready yet
+                printf "[%ss] waiting on %s (state: %s)...\n" "$ELAPSED" "$IFACE" "$OPSTATE"
                 continue
                 ;;
             up)
-                # Good; proceed to carrier/IP checks
+                # good; proceed to carrier/IP checks
                 ;;
         esac
     fi
 
-    # --- Check Physical Link (Carrier) ---
-    # Not all interfaces (like ppp or tun) support the carrier file
+    # --- check physical link (carrier) ---
+    # not all interfaces (like ppp or tun) support the carrier file
     if [ -e "$CFILE" ]; then
-        CARRIER=$(cat "$CFILE" 2>/dev/null || echo "0")
+        CARRIER=$(cat "$CFILE" 2>/dev/null || printf "0")
         if [ "$CARRIER" -ne 1 ]; then
-            printf "[%ss] Link down on %s...\n" "$ELAPSED" "$IFACE"
+            printf "[%ss] link down on %s...\n" "$ELAPSED" "$IFACE"
             continue
         fi
     fi
 
-    # --- Count Valid Global Addresses ---
-    # We count both regardless of mode to keep the code flow simple
-    # We ignore 'deprecated' (old/invalid) and 'tentative' (IPv6 DAD in progress)
+    # --- count valid global addresses ---
+    # we count both regardless of mode to keep the code flow simple
+    # we ignore 'deprecated' (old/invalid) and 'tentative' (IPv6 DAD in progress)
     V4_COUNT=$(ip -4 -o addr show dev "$IFACE" scope global 2>/dev/null \
         | awk '!/deprecated/ {c++} END{print c+0}')
 
     V6_COUNT=$(ip -6 -o addr show dev "$IFACE" scope global 2>/dev/null \
-        | awk '!/tentative|deprecated/ {c++} END{print c+0}')
+        | awk '!/tentative|deprecated/ && /inet6 [23]/ {c++} END{print c+0}')
 
-    # --- Evaluate Readiness based on Mode ---
+    # --- evaluate readiness based on mode ---
     IF_READY=0
     case "$MODE" in
-        ipv4) [ "$V4_COUNT" -gt 0 ] && IF_READY=1 ;;
-        ipv6) [ "$V6_COUNT" -gt 0 ] && IF_READY=1 ;;
-        dual) [ "$V4_COUNT" -gt 0 ] && [ "$V6_COUNT" -gt 0 ] && IF_READY=1 ;;
+        ipv4) if [ "$V4_COUNT" -gt 0 ]; then IF_READY=1; fi ;;
+        ipv6) if [ "$V6_COUNT" -gt 0 ]; then IF_READY=1; fi ;;
+        dual) if [ "$V4_COUNT" -gt 0 ] && [ "$V6_COUNT" -gt 0 ]; then IF_READY=1; fi ;;
     esac
 
     if [ "$IF_READY" -eq 1 ]; then
-        printf "Success: %s ready on %s after %ss.\n" "$MODE" "$IFACE" "$ELAPSED"
+        printf "success: %s ready on %s after %ss.\n" "$MODE" "$IFACE" "$ELAPSED"
         exit 0
     fi
 
-    # Status update with \r to overwrite the current line
-    printf "[%ss] Waiting for %s configuration...\n" "$ELAPSED" "$MODE"
+    printf "[%ss] waiting for %s connectivity...\n" "$ELAPSED" "$MODE"
 done
 
-# --- Timeout Reached ---
-printf "ERROR: Timeout while waiting for $MODE on $IFACE.\n" >&2
+# --- timeout reached ---
+printf "ERROR: timeout while waiting for %s on %s!\n" "$MODE" "$IFACE" >&2
 exit 1

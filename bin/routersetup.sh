@@ -1,6 +1,6 @@
-#!/bin/bash
+#!/usr/bin/env bash
 ### script to setup router functionality in Kubuntu
-### version 2.1.0
+### version 2.2.0
 ### Copyright (c) 2025-2026 Christian Wagner <voodoochriz at gmail dot com>
 ### Licensed under the ISC license. See LICENSE.txt for details.
 
@@ -26,7 +26,7 @@ PRIVATE_IPV4_LAN_CIDR='24'
 LAN_SUFFIX='lan'
 
 # dnscrypt-proxy variables
-DNSCRYPT_PROXY_URL='https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/2.1.15/dnscrypt-proxy-linux_x86_64-2.1.15.tar.gz'
+DNSCRYPT_PROXY_URL='https://github.com/DNSCrypt/dnscrypt-proxy/releases/download/2.1.18/dnscrypt-proxy-linux_x86_64-2.1.18.tar.gz'
 DNSCRYPT_GZIP_FOLDER='linux-x86_64'
 
 # dnsmasq variables
@@ -118,17 +118,17 @@ function installPackage() {
     echo "installing $package..."
 
     # if masking is requested, do it BEFORE install to prevent auto-start
-    [[ "$mask_service" == 'true' ]] && sudo systemctl mask --now "$package.service"
+    [[ "$mask_service" == 'true' ]] && sudo systemctl mask --now "${package}.service"
 
     # perform installation
     if sudo apt-get install -y -q "$package"; then
         # if we masked it, we must unmask it after successful install
-        [[ "$mask_service" == 'true' ]] && sudo systemctl unmask "$package.service"
+        [[ "$mask_service" == 'true' ]] && sudo systemctl unmask "${package}.service"
         return 2 # newly installed
     else
         echo -e "[ ${RED}FAIL${NC} ] installPackage(): installation of $package failed!" >&2
         # clean up mask even on failure
-        [[ "$mask_service" == 'true' ]] && sudo systemctl unmask "$package.service"
+        [[ "$mask_service" == 'true' ]] && sudo systemctl unmask "${package}.service"
         exit 1 # installation error
     fi
 }
@@ -182,6 +182,29 @@ function downloadPackage() {
     fi
 }
 
+## determine whether the system is Ubuntu or Debian-family.
+## returns:
+##   "ubuntu"  – if ID=ubuntu
+##   "debian"  – if ID is one of: debian, sparky, devuan
+##   ""        – for all other distributions
+detectDistro() {
+    local os_id="$(. /etc/os-release; echo "$ID")"
+    # normalize to lowercase
+    os_id="${os_id,,}"
+
+    case "$os_id" in
+        ubuntu|linuxmint)
+            echo "ubuntu"
+            ;;
+        debian|sparkylinux|sparky|devuan)
+            echo "debian"
+            ;;
+        *)
+            echo ""
+            ;;
+    esac
+}
+
 ### install functions
 
 ## install and configure dnscrypt-proxy
@@ -196,10 +219,11 @@ function handleDnscryptProxy() {
     local archiveName="${DNSCRYPT_PROXY_URL##*/}"
     local dnscryptproxyDir="$TMP_DIR/dnscrypt-proxy"
     local installDir="/opt/dnscrypt-proxy/$DNSCRYPT_GZIP_FOLDER"
-    local binary="$installDir/dnscrypt-proxy"
 
     # uninstall section
-    if [[ "$reConfig" == 'true' ]] && systemctl cat dnscrypt-proxy.service >/dev/null 2>&1; then
+    if [[ "$RECONFIG" == 'true' ]] && systemctl list-unit-files dnscrypt-proxy.service --no-legend 2>/dev/null \
+        | grep -q '^dnscrypt-proxy.service'; then
+
         echo "uninstalling dnscrypt-proxy..."
 
         # restore dnsmasq to a state without dnscrypt dependency
@@ -214,15 +238,20 @@ function handleDnscryptProxy() {
         fi
 
         # use dnscrypt-proxy's own service management to clean up
-        if [[ -f "$binary" ]]; then
-            sudo "$binary" -service stop
-            sudo "$binary" -service uninstall
-            echo "dnscrypt-proxy uninstalled."
+        if [[ -f "$installDir/dnscrypt-proxy" ]]; then
+            (
+                cd "$installDir"
+                sudo ./dnscrypt-proxy -service stop
+                sudo ./dnscrypt-proxy -service uninstall
+                echo "dnscrypt-proxy uninstalled."
+            )
         fi
     fi
 
     # install section
-    if ! systemctl cat dnscrypt-proxy.service >/dev/null 2>&1; then
+    if ! systemctl list-unit-files dnscrypt-proxy.service --no-legend 2>/dev/null \
+        | grep -q '^dnscrypt-proxy.service'; then
+
         echo "installing dnscrypt-proxy..."
 
         # download package
@@ -241,16 +270,19 @@ function handleDnscryptProxy() {
         sudo cp -r "$dnscryptproxyDir/$DNSCRYPT_GZIP_FOLDER" "/opt/dnscrypt-proxy/"
 
         # check configuration
-        if ! "$binary" -check >/dev/null 2>&1; then
-            echo -e "[ ${RED}FAIL${NC} ] dnscrypt-proxy config syntax is invalid! check /opt/dnscrypt-proxy/$DNSCRYPT_GZIP_FOLDER/dnscrypt-proxy.toml" >&2
+        if ! ( cd "$installDir" && ./dnscrypt-proxy -check >/dev/null 2>&1 ); then
+            echo -e "[ ${RED}FAIL${NC} ] dnscrypt-proxy config syntax is invalid! check $installDir/dnscrypt-proxy.toml" >&2
             exit 1
         else
             echo -e "[ ${GREEN}OK${NC}   ] dnscrypt-proxy config syntax is valid."
         fi
 
         # service registration
-        sudo "$binary" -service install
-        sudo "$binary" -service start
+        (
+            cd "$installDir"
+            sudo ./dnscrypt-proxy -service install
+            sudo ./dnscrypt-proxy -service start
+        )
 
         # configure dnsmasq to point to dnscrypt-proxy
         if systemctl is-active --quiet dnsmasq.service; then
@@ -278,16 +310,21 @@ function handleDnsmasq() {
     echo "* dnsmasq *"
     echo "***********"
 
-    # install dnsmasq
-    # 'true' masks dnsmasq during install to prevent it failing
-    # if port 53 is already taken by systemd-resolved
-    installPackage 'dnsmasq' 'true'
+    # Ubuntu autostarts dnsmasq → mask before install
+    # Debian/Sparky/Devuan do NOT support masked installs
+    local mask_dnsmasq="false"
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        mask_dnsmasq="true"
+    fi
+
+    # install dnsmasq with correct masking behavior
+    installPackage 'dnsmasq' "$mask_dnsmasq"
     local installStatus=$?
 
     # configure if:
     # - installStatus is 2 (newly installed) OR
-    # - reConfig is true
-    if [[ "$reConfig" == 'true' ]] || [[ $installStatus -eq 2 ]]; then
+    # - RECONFIG is true
+    if [[ "$RECONFIG" == 'true' ]] || [[ $installStatus -eq 2 ]]; then
         echo "configuring dnsmasq..."
 
         # apply dnsmasq-specific settings (e.g., IGNORE_RESOLVCONF=yes)
@@ -300,7 +337,7 @@ function handleDnsmasq() {
             "$CONFIG_DIR/dnsmasq/$DNSMASQ_MASTER_CONFIG" > "$TMP_DIR/$DNSMASQ_CONFIG"
 
         # safety check: test dnsmasq configuration syntax before applying
-        if ! dnsmasq --test -C "$TMP_DIR/$DNSMASQ_CONFIG"; then
+        if ! sudo dnsmasq --test -C "$TMP_DIR/$DNSMASQ_CONFIG"; then
             echo -e "[ ${RED}FAIL${NC} ] dnsmasq config syntax is invalid! check $TMP_DIR/$DNSMASQ_CONFIG" >&2
             exit 1
         else
@@ -355,8 +392,8 @@ function handleDhcpcd() {
 
     # configure if:
     # - installStatus is 2 (newly installed) OR
-    # - reConfig is true
-    if [[ "$reConfig" == 'true' ]] || [[ $installStatus -eq 2 ]]; then
+    # - RECONFIG is true
+    if [[ "$RECONFIG" == 'true' ]] || [[ $installStatus -eq 2 ]]; then
         echo "configuring dhcpcd..."
 
         # process the master configuration
@@ -367,23 +404,38 @@ function handleDhcpcd() {
             -e "s|LANIPV6ADDRESS|$ifLanIpv6Address|g" \
             "$CONFIG_DIR/dhcpcd/dhcpcd.master.conf" > "$TMP_DIR/dhcpcd.conf"
 
-        # check if the dhcpcd configuration is correct
-        if ! sudo dhcpcd -T -f "$TMP_DIR/dhcpcd.conf" >/dev/null 2>&1; then
-            echo -e "[ ${RED}FAIL${NC} ] dhcpcd config syntax is invalid! check $TMP_DIR/dhcpcd.conf" >&2
-            exit 1
+        local dhcpcd_version="$(dpkg-query -W -f='${Version}' dhcpcd-base 2>/dev/null || echo '')"
+
+        # blacklist broken dhcpcd 10.x versions for testing config syntax
+        if dpkg --compare-versions "$dhcpcd_version" ge "1:10.0.0" && \
+            dpkg --compare-versions "$dhcpcd_version" lt "1:10.5.2-2"; then
+
+            echo -e "[ ${YELLOW}WARNING${NC} ] dhcpcd -T skipped (broken dhcpcd version: $dhcpcd_version)."
         else
-             echo -e "[ ${GREEN}OK${NC}   ] dhcpcd config syntax is valid."
+            # check if the dhcpcd configuration is correct
+            if ! sudo dhcpcd -T -f "$TMP_DIR/dhcpcd.conf" >/dev/null 2>&1; then
+                echo -e "[ ${RED}FAIL${NC} ] dhcpcd config syntax is invalid! check $TMP_DIR/dhcpcd.conf" >&2
+                exit 1
+            else
+                echo -e "[ ${GREEN}OK${NC}   ] dhcpcd config syntax is valid."
+            fi
         fi
+
         sudo cp "$TMP_DIR/dhcpcd.conf" "/etc/dhcpcd.conf"
 
         # guard against NetworkManager if it survived the install
-        if systemctl cat NetworkManager.service >/dev/null 2>&1; then
+        if systemctl list-unit-files NetworkManager.service --no-legend 2>/dev/null \
+            | grep -q '^NetworkManager.service'; then
+
             if systemctl is-active --quiet NetworkManager.service; then
                 echo "disabling NetworkManager to prevent interface conflicts..."
                 sudo systemctl stop NetworkManager.service
             fi
-            sudo systemctl disable NetworkManager.service
-            sudo systemctl mask NetworkManager.service
+
+            if ! systemctl is-enabled NetworkManager.service 2>/dev/null | grep -q '^masked'; then
+                sudo systemctl disable NetworkManager.service
+                sudo systemctl mask NetworkManager.service
+            fi
         fi
 
         sudo systemctl enable dhcpcd.service
@@ -406,8 +458,8 @@ function handleSystemdResolved() {
     local targetFile="$targetDir/90-resolved.conf"
     local correctSymlink="/run/systemd/resolve/resolv.conf"
 
-    # configure systemd-resolved if reConfig is true OR the drop-in file is missing
-    if [[ "$reConfig" == 'true' ]] || [[ ! -f "$targetFile" ]]; then
+    # configure systemd-resolved if RECONFIG is true OR the drop-in file is missing
+    if [[ "$RECONFIG" == 'true' ]] || [[ ! -f "$targetFile" ]]; then
         echo "configuring systemd-resolved drop-in..."
 
         sudo mkdir -p "$targetDir"
@@ -441,8 +493,14 @@ function handleSystemdResolved() {
     return 0
 }
 
+# helper: check if module is builtin or loadable
+has_flow_mod() {
+    local mod="$1"
+    local builtinFile="$2"
+    grep -q "$mod" "$builtinFile" || sudo modinfo "$mod" >/dev/null 2>&1
+}
+
 ## install nftables firewall
-## exits script if Flowtable support is missing in the kernel
 ## exits scriot if the nftables configuration file is invalid
 function handleNftables() {
     echo
@@ -450,16 +508,22 @@ function handleNftables() {
     echo "* nftables *"
     echo "************"
 
-    # install nftables
-    # note: 'true' masks it during install to prevent default ruleset loading.
-    installPackage 'nftables' 'true'
+    # Ubuntu autostarts nftables → mask before install
+    # Debian/Sparky/Devuan do NOT support masked installs
+    local mask_nftables="false"
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        mask_nftables="true"
+    fi
+
+    # install nftables with correct masking behavior
+    installPackage 'nftables' "$mask_nftables"
     local installStatus=$?
 
     # configure if:
     # - nftables not running OR
     # - installStatus is 2 (newly installed) OR
-    # - reConfig is true
-    if [[ "$reConfig" == 'true' ]] || [[ $installStatus -eq 2 ]] || \
+    # - RECONFIG is true
+    if [[ "$RECONFIG" == 'true' ]] || [[ $installStatus -eq 2 ]] || \
         ! systemctl is-active --quiet nftables.service; then
 
         echo "configuring nftables..."
@@ -474,54 +538,94 @@ function handleNftables() {
 
         local symbols_found=0
         local kConfig="/boot/config-$(uname -r)"
+        local flowtable_support=false
+        local nft_master
 
         for symbol in "${symbols[@]}"; do
             # check current kernel config file
-            if grep -q "^${symbol}=y" "$kConfig" || grep -q "^${symbol}=m" "$kConfig"; then
+            if grep -Eq "^${symbol}=(y|m)" "$kConfig"; then
                 echo -e "[ ${GREEN}OK${NC}   ] $symbol"
                 ((symbols_found++))
             else
-                echo -e "[ ${RED}FAIL${NC} ] $symbol: not enabled"
+                echo -e "[ ${YELLOW}WARNING${NC} ] $symbol: not enabled"
             fi
         done
 
         # configure flowtables only if support is present
-        if [ $symbols_found -ne 3 ]; then
-            echo -e "[ ${RED}FAIL${NC} ] flowtable support is missing from this kernel!" >&2
-            exit 1
+        if (( symbols_found != ${#symbols[@]} )); then
+            echo -e "[ ${YELLOW}WARNING${NC} ] flowtable kernel config incomplete." >&2
+            flowtable_support=false
         else
-            echo -e "[ ${GREEN}OK${NC}   ] flowtable support is present."
+            echo -e "[ ${GREEN}OK${NC}   ] flowtable support is present (kernel config)."
+            flowtable_support=true
         fi
 
         # check if flowtable support is built-in or available as a module
         echo "checking flowtable support..."
         local builtinFile="/lib/modules/$(uname -r)/modules.builtin"
-        if (grep -q "nf_flow_table" "$builtinFile" || modinfo nf_flow_table >/dev/null 2>&1) \
-            && (grep -q "nf_flow_table_inet" "$builtinFile" || modinfo nf_flow_table_inet >/dev/null 2>&1); then
+
+        if $flowtable_support && \
+            has_flow_mod nf_flow_table "$builtinFile" && \
+            has_flow_mod nf_flow_table_inet "$builtinFile"; then
+
             echo "flowtable support detected."
 
-            # if it's a module, ensure it's set to load on boot
-            if ! grep -q "nf_flow_table" "$builtinFile"; then
-                echo "loading flowtable modules..."
-                sudo install -m 644 "$CONFIG_DIR/nftables/nftables-flowtable.conf" "/etc/modules-load.d/nftables-flowtable.conf"
-                # load them now
-                sudo modprobe -q nf_flow_table
-                sudo modprobe -q nf_flow_table_inet
-            else
+            # nf_flow_table builtin?
+            if grep -q "nf_flow_table" "$builtinFile"; then
                 echo "flowtable is built into the kernel; no modules to load."
                 # ensure no old/conflicting config exists
                 sudo rm -f "/etc/modules-load.d/nftables-flowtable.conf"
+            else
+                # if it's a module, ensure it's set to load on boot
+                echo "loading flowtable modules..."
+                sudo install -m 644 "$CONFIG_DIR/nftables/nftables-flowtable.conf" \
+                    "/etc/modules-load.d/nftables-flowtable.conf"
+                sudo modprobe -q nf_flow_table
+                sudo modprobe -q nf_flow_table_inet
             fi
+
+            nft_master="nftables-flowtables"
+
         else
-            echo -e "[ ${RED}FAIL${NC} ] flowtable support is missing from this kernel!" >&2
-            exit 1
+            echo -e "[ ${YELLOW}WARNING${NC} ] flowtable support unavailable." >&2
+            echo "falling back to non-flowtable nftables configuration."
+
+            nft_master="nftables-noflowtables"
         fi
 
         # process nftables master configuration
         sed -e "s|IFWAN|$ifWan|g" \
             -e "s|IFLAN|$ifLan|g" \
             -e "s|LANIPV6ADDRESS|$ifLanIpv6Address|g" \
-            "$CONFIG_DIR/nftables/nftables.master.conf" > "$TMP_DIR/nftables.conf"
+            "$CONFIG_DIR/nftables/$nft_master.master.conf" > "$TMP_DIR/nftables.conf"
+
+        local nftables_version="$(dpkg-query -W -f='${Version}' nftables 2>/dev/null || echo '')"
+
+        # blacklist all nftables 1.0.9 builds for syntax testing
+        # known segfaults: LP #2142552 (netlink udata), nftables bugs #1731, #1763
+        if [ -n "$nftables_version" ] && [[ "$nftables_version" == 1.0.9* ]]; then
+            echo -e "[ ${YELLOW}WARNING${NC} ] broken nftables version: $nftables_version detected."
+            echo -e "[ ${YELLOW}WARNING${NC} ] installing nftables from ubuntu resolute. please wait..."
+
+            # add the ubuntu resolute repository
+            sudo add-apt-repository "deb http://archive.ubuntu.com/ubuntu resolute main universe"
+            sudo apt update
+
+            # install nftables from resolute
+            if ! sudo apt install -y -t resolute nftables; then
+                sudo add-apt-repository --remove "deb http://archive.ubuntu.com/ubuntu resolute main universe"
+                sudo apt update
+
+                echo -e "[ ${RED}FAIL${NC} ] failed to install nftables from ubuntu resolute!" >&2
+                exit 1
+            else
+                echo -e "[ ${GREEN}OK${NC}   ] nftables $(sudo nft --version | awk '{print $2}') installed."
+            fi
+
+            # remove the ubuntu resolute repository again
+            sudo add-apt-repository --remove "deb http://archive.ubuntu.com/ubuntu resolute main universe"
+            sudo apt update
+        fi
 
         # safety check: test syntax before applying
         if ! sudo nft -nn -c -f "$TMP_DIR/nftables.conf"; then
@@ -555,14 +659,21 @@ function handleChrony() {
     echo "* chrony *"
     echo "**********"
 
-    # install chrony if not present - masked install: prevents auto-start with default settings
+    # Ubuntu autostarts chrony → mask before install
+    # Debian/Sparky/Devuan do NOT support masked installs
+    local mask_chrony="false"
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        mask_chrony="true"
+    fi
+
+    # install chrony if not present with correct masking behavior
     # returns 0 if already installed, 2 if newly installed
-    installPackage 'chrony' 'true'
+    installPackage 'chrony' "$mask_chrony"
     local installStatus=$?
 
     # configuration logic
-    # we configure if: reConfig is true OR it's a new install OR the custom chrony config is missing
-    if [[ "$reConfig" == 'true' ]] || [[ $installStatus -eq 2 ]] || \
+    # we configure if: RECONFIG is true OR it's a new install OR the custom chrony config is missing
+    if [[ "$RECONFIG" == 'true' ]] || [[ $installStatus -eq 2 ]] || \
         [[ ! -f "/etc/chrony/conf.d/lan-access-ntp.conf" ]]; then
         echo "configuring chrony..."
 
@@ -578,15 +689,20 @@ function handleChrony() {
             -e "s|LANIPV6ADDRESS|$ifLanIpv6Address|g" \
             "$CONFIG_DIR/chrony/lan-access-ntp.master.conf" > "$TMP_DIR/lan-access-ntp.conf"
 
+        sudo cp "$TMP_DIR/lan-access-ntp.conf" "/etc/chrony/conf.d/lan-access-ntp.conf"
+
         # validate chrony configuration
         # chrony also validates the NTP sources, which need to and have been copied previously
-        if ! chronyd -p -f "$TMP_DIR/lan-access-ntp.conf" >/dev/null; then
+
+        # make sure the service is really stopped (this is REQUIRED)
+        sudo systemctl stop chrony.service
+
+        if ! sudo chronyd -p -f "/etc/chrony/conf.d/lan-access-ntp.conf" >/dev/null; then
             echo -e "[ ${RED}FAIL${NC} ] chrony config syntax is invalid! check $TMP_DIR/lan-access-ntp.conf" >&2
             exit 1
         else
             echo -e "[ ${GREEN}OK${NC}   ] chrony config syntax is valid."
         fi
-        sudo cp "$TMP_DIR/lan-access-ntp.conf" "/etc/chrony/conf.d/lan-access-ntp.conf"
 
         # restart chrony
         echo "starting chrony..."
@@ -601,7 +717,7 @@ function handleChrony() {
                 sudo systemctl mask systemd-timesyncd
             fi
         else
-            echo -e "${YELLOW}WARNING:${NC} chrony failed to start. leaving systemd-timesyncd active as fallback." >&2
+            echo -e "[ ${YELLOW}WARNING${NC} ] chrony failed to start. leaving systemd-timesyncd active as fallback." >&2
         fi
 
         echo "chrony configured successfully."
@@ -640,7 +756,7 @@ handleSysctld() {
 
     for target in "${!conntrackFiles[@]}"; do
         local src="${conntrackFiles[$target]}"
-        if [[ "$reConfig" == 'true' || ! -f "$target" ]]; then
+        if [[ "$RECONFIG" == 'true' || ! -f "$target" ]]; then
             echo "copying $(basename "$target")..."
             sudo cp "$src" "$target"
             conntrackInit='true'
@@ -659,6 +775,22 @@ handleSysctld() {
         fi
     fi
 
+    # explicitly ensure nf_conntrack is loaded into the active kernel session
+    # checking /proc/sys/net/netfilter/nf_conntrack_max guarantees the conntrack sysctl leaf exists
+    if [[ ! -f /proc/sys/net/netfilter/nf_conntrack_max ]]; then
+        echo "loading nf_conntrack module into running kernel..."
+        if ! sudo modprobe nf_conntrack; then
+            echo -e "[ ${RED:-}FAIL${NC:-} ] failed to load nf_conntrack kernel module!" >&2
+            exit 1
+        fi
+
+        # verify the sysctl leaf exists after modprobe
+        if [[ ! -f /proc/sys/net/netfilter/nf_conntrack_max ]]; then
+            echo -e "[ ${RED:-}FAIL${NC:-} ] nf_conntrack loaded but /proc sysctl leaf is missing (container/namespace restriction?)" >&2
+            exit 1
+        fi
+    fi
+
     # handle sysctl.d files (generic loop)
     local -A sysctlFiles=(
         ["$SYSCTLD_NET_CONFIG"]="$CONFIG_DIR/sysctld/$SYSCTLD_NET_CONFIG"
@@ -668,7 +800,7 @@ handleSysctld() {
 
     # special case: WAN IPv6 file is templated
     local wanTmp="$TMP_DIR/$SYSCTLD_WANIPV6_CONFIG"
-    if [[ "$reConfig" == 'true' || ! -f "/etc/sysctl.d/$SYSCTLD_WANIPV6_CONFIG" ]]; then
+    if [[ "$RECONFIG" == 'true' || ! -f "/etc/sysctl.d/$SYSCTLD_WANIPV6_CONFIG" ]]; then
         echo "generating $SYSCTLD_WANIPV6_CONFIG for interface $ifWan..."
         sed "s|IFWAN|$ifWan|g" \
             "$CONFIG_DIR/sysctld/$SYSCTLD_WANIPV6_MASTER_CONFIG" > "$wanTmp"
@@ -684,7 +816,7 @@ handleSysctld() {
         local src="${sysctlFiles[$name]}"
         local dst="/etc/sysctl.d/$name"
 
-        if [[ "$reConfig" == 'true' || ! -f "$dst" ]]; then
+        if [[ "$RECONFIG" == 'true' || ! -f "$dst" ]]; then
             echo "copying $name..."
             testSysctldConfig "$src"
             sudo cp "$src" "$dst"
@@ -694,11 +826,13 @@ handleSysctld() {
         fi
     done
 
-    # apply sysctl changes
-    if [[ "$sysctldChanged" == 'true' ]]; then
-        echo "applying sysctl parameters..."
-         # -e for ignore unknown keys or errors, -q for quiet, --system to load all /etc/sysctl.d/*.conf files
-        sudo sysctl -e -q --system
+    # apply sysctl changes and verify persistence
+    if [[ "$sysctldChanged" == 'true' || "$conntrackInit" == 'true' ]]; then
+        echo "restarting systemd-sysctl.service to apply kernel parameters..."
+        if ! sudo systemctl restart systemd-sysctl.service; then
+            echo -e "[ ${RED}FAIL${NC} ] failed to restart systemd-sysctl.service!" >&2
+            exit 1
+        fi
     fi
 
     return 0
@@ -711,33 +845,42 @@ function handleNetqos() {
     echo "* netqos *"
     echo "**********"
 
-    local trafficOutMbps
+    local trafficOut
     local connInput
-    local connType
+    local overhead
+    local govInput
+    local governor
+    local cakeservices
 
     echo "internet upload speed in Mbps (1-10000)?"
-    while read -p "enter speed: " trafficOutMbps; do
-        if [[ "$trafficOutMbps" =~ ^[0-9]+$ && "$trafficOutMbps" -ge 1 && "$trafficOutMbps" -le 10000 ]]; then
+    while read -p "enter speed: " trafficOut; do
+        if [[ "$trafficOut" =~ ^[0-9]+$ && "$trafficOut" -ge 1 && "$trafficOut" -le 10000 ]]; then
             break
         else
             echo "invalid input. please enter a number between 1 and 10000:" >&2
         fi
     done
+    # convert mbit to kbit
+    trafficOut=$(( trafficOut * 1000 ))
 
     echo "internet connection type (cable, dsl, fiber)?"
     while read -p "enter c, d or f: " connInput; do
         connInput="${connInput,,}"
         case "$connInput" in
             c)
-                connType='cable'
+                # DOCSIS framing
+                overhead='overhead 18 docsis'
                 break
                 ;;
             d)
-                connType='dsl'
+                # VDSL2/PTM usually needs more (44 is a safe bet for PPPoE+VLAN)
+                overhead='overhead 44 ptm'
                 break
                 ;;
             f)
-                connType='fiber'
+                # Fiber is usually 18 (Ethernet) or 26 (Ethernet + VLAN + PPPoE)
+                # We'll use 18 as a clean baseline for FTTH.
+                overhead='overhead 18'
                 break
                 ;;
             *)
@@ -746,18 +889,59 @@ function handleNetqos() {
         esac
     done
 
-    # prepare netqos script
-    echo "preparing netqos service integration..."
-    sed -e "s|IFWAN|$ifWan|g" \
-        -e "s|MAXUPLINKSPEED|${trafficOutMbps}mbit|g" \
-        -e "s|CONNTYPE|$connType|g" \
-        "$CONFIG_DIR/netqos/netqos.master.sh" > "$TMP_DIR/netqos.sh"
-    sudo install -m 755 "$TMP_DIR/netqos.sh" "/usr/local/sbin/netqos.sh"
+    echo "use global or per-queue governor (use global for now)?"
+    while read -p "enter g or q: " govInput; do
+        govInput="${govInput,,}"
+        case "$govInput" in
+            g)
+                governor='global'
+                cakeservices='netqos.service'
+                break
+                ;;
+            q)
+                governor='mq'
+                cakeservices='netqos.service cake-governor.service'
+                break
+                ;;
+            *)
+                echo "invalid input. please enter g or q:" >&2
+                ;;
+        esac
+    done
+
+    echo "preparing netqos + cake-governor service integration..."
+
+    # ensure /usr/local/sbin exists
+    sudo mkdir -p "/usr/local/sbin"
+
+    for name in 'netqos' 'cake-governor'; do
+        out="$TMP_DIR/$name.sh"
+
+        # render template
+        sed -e "s|IFWAN|$ifWan|g" \
+            -e "s|MAXUPLINKSPEED|$trafficOut|g" \
+            -e "s|OVRHD|$overhead|g" \
+            -e "s|TCMODE|$governor|g" \
+            "$CONFIG_DIR/netqos/$name.master.sh" > "$out"
+        # install
+        sudo install -m 755 "$out" "/usr/local/sbin/$name.sh"
+    done
+
+    # uninstall cake-governor.service if it is not used
+    if [[ "$governor" == 'global' && -f '/etc/systemd/system/cake-governor.service' ]]; then
+        sudo systemctl disable --now cake-governor.service
+        sudo rm "/etc/systemd/system/cake-governor.service"
+    fi
 
     # prepare netqos.service
     sed -e "s|IFWAN|$ifWan|g" \
         "$CONFIG_DIR/netqos/netqos.master.service" > "$TMP_DIR/netqos.service"
-    sudo cp "$TMP_DIR/netqos.service" "/etc/systemd/system/netqos.service"
+    sudo install -m 644 "$TMP_DIR/netqos.service" "/etc/systemd/system/netqos.service"
+
+    # prepare cake-governor.service (only needed in mq mode)
+    if [[ "$governor" = 'mq' ]]; then
+        sudo install -m 644 "$CONFIG_DIR/netqos/cake-governor.service" "/etc/systemd/system/cake-governor.service"
+    fi
 
     # prepare UDEV netqos.rules
     sed -e "s|IFWAN|$ifWan|g" \
@@ -765,18 +949,30 @@ function handleNetqos() {
     sudo install -m 644 "$TMP_DIR/90-netqos.rules" "/etc/udev/rules.d/90-netqos.rules"
 
     # reload udev rules
-    sudo udevadm control --reload
+    sudo udevadm control --reload-rules
     sudo udevadm trigger --subsystem-match=net
 
     # handle service state and reload
     sudo systemctl daemon-reload
-    sudo systemctl enable netqos.service
-    sudo systemctl restart netqos.service
 
-    echo -e "[ ${GREEN}OK${NC}   ] netqos service configuration complete."
+    # NOTE: $cakeservices is left unquoted deliberately to allow multiple parameters
+    for service in $cakeservices; do
+        sudo systemctl enable "$service"
+        sudo systemctl restart "$service"
+
+        if systemctl is-active --quiet "$service"; then
+            echo -e "[ ${GREEN}OK${NC}   ] $service is running."
+        else
+            echo -e "[ ${RED}FAIL${NC} ] $service failed to start!" >&2
+            systemctl status "$service" --no-pager
+            exit 1
+        fi
+    done
+
     echo "WAN interface: $ifWan"
-    echo "Upload speed:  ${trafficOutMbps}mbit"
-    echo "Connection:    $connType"
+    echo "netqos mode: $governor"
+    echo "upload speed:  ${trafficOut}kbit"
+    echo "overhead:    $overhead"
 
     return 0
 }
@@ -793,8 +989,10 @@ function handleDdclient() {
     local buildDir="$ddclientDir/$DDCLIENT_GZIP_FOLDER"
 
     # clean uninstall
-    # we run this if reConfig is true, AND if we find an existing binary/service
-    if [[ "$reConfig" == 'true' ]] && systemctl cat ddclient.service >/dev/null 2>&1; then
+    # we run this if RECONFIG is true, AND if we find an existing binary/service
+    if [[ "$RECONFIG" == 'true' ]] && systemctl list-unit-files ddclient.service --no-legend 2>/dev/null \
+        | grep -q '^ddclient.service'; then
+
         echo "purging ddclient..."
 
         # stop and disable service
@@ -827,7 +1025,9 @@ function handleDdclient() {
 
     # installation logic
     # check if binary is missing or service is not present
-    if ! command -v ddclient &>/dev/null || ! systemctl cat ddclient.service >/dev/null 2>&1; then
+    if ! command -v ddclient &>/dev/null || ! systemctl list-unit-files ddclient.service --no-legend 2>/dev/null \
+        | grep -q '^ddclient.service'; then
+
         echo "starting fresh source build and installation of ddclient..."
 
         # modern dependencies for 4.0+ (HTTP::Daemon and JSON support)
@@ -891,8 +1091,10 @@ function handleSlapd() {
 
     local base_dn="o=phonebook,dc=router,dc=lan"
 
-    # uninstall (if reConfig is true)
-    if [[ "$reConfig" == 'true' ]] && systemctl cat slapd.service >/dev/null 2>&1; then
+    # uninstall (if RECONFIG is true)
+    if [[ "$RECONFIG" == 'true' ]] && systemctl list-unit-files slapd.service --no-legend 2>/dev/null \
+        | grep -q '^slapd.service'; then
+
         echo "reconfiguration triggered. purging slapd..."
 
         # stop the service
@@ -910,7 +1112,9 @@ function handleSlapd() {
     fi
 
     # installation (standard)
-    if ! systemctl cat slapd.service >/dev/null 2>&1; then
+    if ! systemctl list-unit-files slapd.service --no-legend 2>/dev/null \
+        | grep -q '^slapd.service'; then
+
         echo "installing slapd..."
 
         installPackage 'ldap-utils' 'false'
@@ -1009,26 +1213,37 @@ if (( $# > 1 )); then
 fi
 
 # handle Arguments
-reConfig='false'
+RECONFIG='false'
 if [[ $# -eq 1 ]]; then
     case "$1" in
-        -reconfig|--reconfig|reconfig) reConfig=true ;;
+        -reconfig|--reconfig|reconfig) RECONFIG=true ;;
         *) echo "unknown parameter: $1. usage: $0 [-reconfig]"; exit 1 ;;
     esac
 fi
 
 ## check for preconditions
+if systemd-notify --booted; then
+    echo -e "[ ${GREEN}OK${NC}   ] systemd is active."
+else
+    echo -e "[ ${RED}FAIL${NC} ] systemd is not active!" >&2
+fi
 
+DISTRO="$(detectDistro)"
+
+echo
 
 # explain what this script does
 cat << EOF
-this script adds router functionality to your debian-based system:
+this script adds router functionality to your debian-/ubuntu- based system:
 - routing & connection sharing
 - firewall (nftables) & traffic shaping (tc)
 - dns (dnsmasq + dnscrypt-proxy)
 - dhcp (dhcpcd) & ntp (chrony)
 - optional: qos, ddclient, ldap and custom hosts
 EOF
+
+echo
+echo "detected distro base: $DISTRO"
 
 # ask user to proceed
 echo -n "do you want to continue (Y/n)? "
@@ -1113,7 +1328,7 @@ else
 fi
 
 if [[ "$ifLanAddressesValid" == 'false' ]]; then
-    echo "${YELLOW}WARNING:${NC} missing or invalid lan config in $ifLanAddrConf. using (generated) defaults."
+    echo -e "${YELLOW}WARNING:${NC} missing or invalid lan config in $ifLanAddrConf. using (generated) defaults."
     ifLanIpv6Address=$(printf "fd%02x:%04x:%04x::1" "$((RANDOM & 0xff))" "$((RANDOM & 0xffff))" "$((RANDOM & 0xffff))")
     ifLanIpv4Address="$PRIVATE_IPV4_LAN_ADDRESS"
     ifLanIpv4Cidr="$PRIVATE_IPV4_LAN_CIDR"
@@ -1146,7 +1361,7 @@ for ddscript in "${ddscripts[@]}"; do
     master="../lib/${ddscript%.sh}.master.sh"
     tmp="$TMP_DIR/$ddscript"
 
-    if [[ "$reConfig" == "true" ]] || [[ ! -f "$target" ]]; then
+    if [[ "$RECONFIG" == "true" ]] || [[ ! -f "$target" ]]; then
         echo "installing script: $ddscript"
 
         # check sed result before installing script
@@ -1202,6 +1417,6 @@ echo -n "set up ldap server (y/N)? "
 [[ $(getYesNoResponse 'n') == 'y' ]] && handleSlapd
 
 echo
-echo "router setup complete."
+echo "router setup complete. please reboot."
 
 exit 0

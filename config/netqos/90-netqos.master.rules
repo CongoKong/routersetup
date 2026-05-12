@@ -1,3 +1,9 @@
+# link down: mark device not-ready so BindsTo stops netqos
+ACTION=="change", SUBSYSTEM=="net", KERNEL=="IFWAN", \
+  ATTR{carrier}=="0", TAG+="systemd", ENV{SYSTEMD_READY}="0"
+
+# link up: mark ready, re-run netqos
 ACTION=="change", SUBSYSTEM=="net", KERNEL=="IFWAN", \
   ATTR{carrier}=="1", ATTR{operstate}=="up", \
-  TAG+="systemd", ENV{SYSTEMD_WANTS}="netqos.service"
+  TAG+="systemd", ENV{SYSTEMD_READY}="1", \
+  ENV{SYSTEMD_WANTS}="netqos.service"

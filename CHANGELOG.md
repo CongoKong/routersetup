@@ -5,6 +5,13 @@ The format is based on semantic versioning (MAJOR.MINOR.PATCH).
 
 ---
 
+## [v2.2.0] – Preparation for upcoming Projects
+### Changed
+- Improved compatibility with Debian-based distros
+- dnscrypt-proxy updated to 2.1.18
+- Added option to allow WAN-side SAT>IP servers for DVB streaming in nftables
+- Rewrote SQM (tc) configuration to also support per-queue scheduling
+
 ## [v2.1.0] – Initial Release
 ### Added
 - Optimized sysctl.d kernel/network parameters for deterministic routing performance
